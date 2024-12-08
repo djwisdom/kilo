@@ -20,7 +20,7 @@
 
 /*** defines ***/
 
-#define KILO_VERSION "0.0.2"
+#define KILO_VERSION "0.0.3"
 #define KILO_TAB_STOP 4
 #define KILO_QUIT_TIMES 3
 
@@ -36,7 +36,8 @@ enum editorKey {
   HOME_KEY,
   END_KEY,
   PAGE_UP,
-  PAGE_DOWN
+  PAGE_DOWN,
+  INSERT_KEY
 };
 
 enum editorHighlight {
@@ -162,12 +163,13 @@ void enableRawMode() {
 int editorReadKey() {
   int nread;
   char c;
+  char seq[3];
+
   while ((nread = read(STDIN_FILENO, &c, 1)) != 1) {
     if (nread == -1 && errno != EAGAIN) die("read");
   }
 
   if (c == '\x1b') {
-    char seq[3];
 
     if (read(STDIN_FILENO, &seq[0], 1) != 1) return '\x1b';
     if (read(STDIN_FILENO, &seq[1], 1) != 1) return '\x1b';
@@ -175,6 +177,7 @@ int editorReadKey() {
     if (seq[0] == '[') {
       if (seq[1] >= '0' && seq[1] <= '9') {
         if (read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
+        if (seq[1] == '2' && read(STDIN_FILENO, &seq[2], 1) != 1) return '\x1b';
         if (seq[2] == '~') {
           switch (seq[1]) {
             case '1': return HOME_KEY;
@@ -424,7 +427,11 @@ int editorRowRxToCx(erow *row, int rx) {
       cur_rx += (KILO_TAB_STOP - 1) - (cur_rx % KILO_TAB_STOP);
     cur_rx++;
   }
-  if (cur_rx > rx) return cx;
+  if (cur_rx > rx) {
+    return cx;
+  } else {
+    return 0;
+  }
 }
 
 
@@ -586,8 +593,16 @@ void editorOpen(char *filename) {
 
   editorSelectSyntaxHighlight();
 
-  FILE *fp = fopen(filename, "r");
-  if (!fp) die("fopen");
+  FILE *fp = NULL;
+
+  fp = fopen(filename, "r");
+  if (!fp) {
+    fp = fopen(filename, "w");
+
+    if (!fp) {
+      die("fopen");
+    }
+  }
 
   char *line = NULL;
   size_t linecap = 0;
@@ -623,7 +638,7 @@ void editorSave() {
         close(fd);
         free(buf);
         E.dirty = 0;
-        editorSetStatusMessage("[INFO] \"%.20s\" %d bytes written to disk", len);
+        editorSetStatusMessage("[INFO] \"%.20s\" %d bytes written to disk", E.filename, len);
         return;
       }
     }
@@ -746,7 +761,7 @@ void editorResizeHandler(int sig) {
     }
 
     editorRefreshScreen(); // Redraw the editor after resizing
-    editorSetStatusMessage("[INFO] Window resized");
+    // editorSetStatusMessage("[INFO] Window resized");
 }
 
 void editorScroll() {
@@ -841,7 +856,7 @@ void editorDrawMessageBar(struct abuf *ab) {
   abAppend(ab, "\x1b[K", 3);
   int msglen = strlen(E.statusmsg);
   if (msglen > E.screencols) msglen = E.screencols;
-  if (msglen && time(NULL) - E.statusmsg_time < 5)
+  if (msglen && time(NULL) - E.statusmsg_time < 2)
     abAppend(ab, E.statusmsg, msglen);
 }
 
@@ -952,6 +967,9 @@ void editorMoveCursor(int key) {
       if (E.cy < E.numrows) {
         E.cy++;
       }
+      break;
+    case INSERT_KEY:
+      editorSetStatusMessage("Ins");
       break;
   }
 
@@ -1078,7 +1096,7 @@ void editorProcessKeypress() {
 
     default:
       editorInsertChar(c);
-      editorSetStatusMessage("");
+      editorSetStatusMessage("%c", c);
       break;
   }
 

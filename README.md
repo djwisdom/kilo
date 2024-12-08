@@ -17,6 +17,7 @@ VT100 (and similar terminals) escape sequences.
 This is a work-in-progress and is primarily updated as a learning tool.  
 
 Version
+0.0.3 No longer errors out if filename does not exist. Empty file is opened.
 0.0.2 Added line number toggle. Syntax highlighting disabled by default. Cosmetic updates.
 0.0.1 Initial commit. Source is somewhat similar to original kilo from antirez.
 
