@@ -6,12 +6,14 @@ Usage: kilo `<filename>`
 
 Keys:
 
-`
   CTRL-S: Save
+  
   CTRL-Q: Quit
-  CTRL-F: Find string in file (ESC to exit search, arrows to navigate)
+  
+  CTRL-F: Find string in file (ESC to exit search, arrows to navigate) 
+  
   CTRL-N: Toggles line number (Off, Normal, Relative)
-`
+
 
 Kilo does not depend on any library (not even curses). It uses fairly standard
 VT100 (and similar terminals) escape sequences. 
