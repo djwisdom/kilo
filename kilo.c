@@ -7,6 +7,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <stdlib.h>
@@ -19,8 +20,8 @@
 
 /*** defines ***/
 
-#define KILO_VERSION "0.0.1"
-#define KILO_TAB_STOP 8
+#define KILO_VERSION "0.0.2"
+#define KILO_TAB_STOP 4
 #define KILO_QUIT_TIMES 3
 
 #define CTRL_KEY(k) ((k) & 0x1f)
@@ -89,9 +90,8 @@ struct editorConfig {
   time_t statusmsg_time;
   struct editorSyntax *syntax;
   struct termios orig_termios;
-};
-
-struct editorConfig E;
+  int line_numbers;        // 0=off, 1=normal, 2=relative
+} E;
 
 /*** filetypes ***/
 
@@ -123,6 +123,9 @@ struct editorSyntax HLDB[] = {
 void editorSetStatusMessage(const char *fmt, ...);
 void editorRefreshScreen();
 char *editorPrompt(char *prompt, void (*callback)(char *, int));
+char *editorRowsToString(int *buflen);
+void editorToggleLineNumbers();
+void editorProcessKeypress();
 
 /*** terminal ***/
 
@@ -620,7 +623,7 @@ void editorSave() {
         close(fd);
         free(buf);
         E.dirty = 0;
-        editorSetStatusMessage("[INFO] %d bytes written to disk", len);
+        editorSetStatusMessage("[INFO] \"%.20s\" %d bytes written to disk", len);
         return;
       }
     }
@@ -727,6 +730,25 @@ void abFree(struct abuf *ab) {
 
 /*** output ***/
 
+void editorResizeHandler(int sig) {
+    (void)sig; // Unused parameter
+
+    struct winsize ws;
+    if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+        return; // Fallback in case terminal size cannot be determined
+    }
+
+    E.screenrows = ws.ws_row - 2; // Adjust rows for status and message bars
+    E.screencols = ws.ws_col;
+
+    if (E.cy >= E.numrows) {
+        E.cy = E.numrows ? E.numrows - 1 : 0; // Ensure cursor is in bounds
+    }
+
+    editorRefreshScreen(); // Redraw the editor after resizing
+    editorSetStatusMessage("[INFO] Window resized");
+}
+
 void editorScroll() {
   E.rx = 0;
   if (E.cy < E.numrows) {
@@ -768,42 +790,22 @@ void editorDrawRows(struct abuf *ab) {
         abAppend(ab, "~", 1);
       }
     } else {
-      int len = E.row[filerow].rsize - E.coloff;
-      if (len < 0) len = 0;
-      if (len > E.screencols) len = E.screencols;
-      char *c = &E.row[filerow].render[E.coloff];
-      unsigned char  *hl = &E.row[filerow].hl[E.coloff];
-      int current_color = -1;
-      int j;
-      for (j = 0; j < len; j++) {
-        if (iscntrl(c[j])) {
-          char sym = (c[j] <= 26) ? '@' + c[j] : '?';
-          abAppend(ab, "\x1b[7m", 4);
-          abAppend(ab, &sym, 1);
-          abAppend(ab, "\x1b[m", 3);
-          if (current_color != -1) {
-            char buf[16];
-            int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", current_color);
-            abAppend(ab, buf, clen);
+
+      if (E.line_numbers > 0) {
+          char lineno[16];
+          if (E.line_numbers == 1) {
+
+              snprintf(lineno, sizeof(lineno), "%4d ", filerow + 1);
+          } else {
+
+              int relno = abs(filerow - E.cy) + 1;
+              snprintf(lineno, sizeof(lineno), "%4d ", relno);
           }
-        } else if (hl[j] == HL_NORMAL) {
-          if (current_color != -1) {
-            abAppend(ab, "\x1b[39m", 5);
-            current_color = -1;
-          }
-          abAppend(ab, &c[j], 1);
-        } else {
-          int color = editorSyntaxToColor(hl[j]);
-          if (color != current_color) {
-            current_color = color;
-            char buf[16];
-            int clen = snprintf(buf, sizeof(buf), "\x1b[%dm", color);
-            abAppend(ab, buf, clen);
-          }
-          abAppend(ab, &c[j], 1);
-        }
+
+          abAppend(ab, lineno, strlen(lineno));
       }
-      abAppend(ab, "\x1b[39m", 5);
+
+      abAppend(ab, E.row[filerow].chars, E.row[filerow].size);
     }
 
     abAppend(ab, "\x1b[K", 3);
@@ -814,11 +816,12 @@ void editorDrawRows(struct abuf *ab) {
 void editorDrawStatusBar(struct abuf *ab) {
   abAppend(ab, "\x1b[7m", 4);
   char status[80], rstatus[80];
-  int len = snprintf(status, sizeof(status), "\"%.20s\"  %dL  ^Q:quit ^S:save ^F:find  %s",
-    E.filename ? E.filename : "[Untitled]", E.numrows,
-    E.dirty ? "[*]" : "");
-  int rlen = snprintf(rstatus, sizeof(rstatus), "%s - %d:%d",
-    E.syntax ? E.syntax->filetype : "no ft", E.cy + 1, E.cx + 1);
+  const char *modes[] = {"off", "num", "rel"};
+  int len = snprintf(status, sizeof(status), " \"%.20s\" %d lines  ctrl-h:help  %s",
+    E.filename ? E.filename : " -untitled-", E.numrows,
+    E.dirty ? "-mod-" : "");
+  int rlen = snprintf(rstatus, sizeof(rstatus), "filetype %s %s ln %d, co %d ", 
+    E.syntax ? E.syntax->filetype : "crlf", modes[E.line_numbers], E.cy + 1, E.cx + 1);
   if (len > E.screencols) len = E.screencols;
   abAppend(ab, status, len);
   while (len < E.screencols) {
@@ -848,6 +851,7 @@ void editorRefreshScreen() {
   struct abuf ab = ABUF_INIT;
 
   abAppend(&ab, "\x1b[?25l", 6);
+  abAppend(&ab, "\x1b[2J]", 4);
   abAppend(&ab, "\x1b[H", 3);
 
   editorDrawRows(&ab);
@@ -865,13 +869,18 @@ void editorRefreshScreen() {
   abFree(&ab);
 }
 
-
 void editorSetStatusMessage(const char *fmt, ...) {
   va_list ap;
   va_start(ap, fmt);
   vsnprintf(E.statusmsg, sizeof(E.statusmsg), fmt, ap);
   va_end(ap);
   E.statusmsg_time = time(NULL);
+}
+
+void editorToggleLineNumbers() {
+    E.line_numbers = (E.line_numbers + 1) % 3;
+    const char *modes[] = {"is disabled", "is enabled", "is in relative mode"};
+    editorSetStatusMessage("Line number %s", modes[E.line_numbers]);
 }
 
 /*** input ***/
@@ -961,6 +970,7 @@ void editorProcessKeypress() {
   switch(c) {
     case '\r':
       editorInsertNewline();
+      editorSetStatusMessage("Enter");
       break;
 
     case CTRL_KEY('q'):
@@ -975,27 +985,55 @@ void editorProcessKeypress() {
       exit(0);
       break;
 
+    case CTRL_KEY('n'):
+      editorToggleLineNumbers();
+      break;  
+
     case CTRL_KEY('s'):
       editorSave();
       break;
 
+    case CTRL_KEY('o'):
+      editorSetStatusMessage("[TODO] Open file");
+      break;
+
+    case CTRL_KEY('w'):
+      editorSetStatusMessage("[TODO] Close");
+      break;
+
+    case CTRL_KEY('g'):
+      editorSetStatusMessage("[TODO] Goto line");
+      break;
+
+    case CTRL_KEY('h'):
+      editorSetStatusMessage("[MENU] ^q:quit ^s:save ^f:find ^n:+/-linenumber");
+      break;
+
     case HOME_KEY:
       E.cx = 0;
+      editorSetStatusMessage("Home");
       break;
 
     case END_KEY:
       if (E.cy < E.numrows)
         E.cx = E.row[E.cy].size;
+      editorSetStatusMessage("End");
       break;
 
     case CTRL_KEY('f'):
+      editorSetStatusMessage("Find what?");
       editorFind();
       break;
 
+    // case CTRL_KEY('h'):
     case BACKSPACE:
-    case CTRL_KEY('h'):
     case DEL_KEY:
-      if (c == DEL_KEY) editorMoveCursor(ARROW_RIGHT);
+      if (c == DEL_KEY) {
+        editorMoveCursor(ARROW_RIGHT);
+        editorSetStatusMessage("Del");
+      } else if (c == BACKSPACE) {
+        editorSetStatusMessage("Bksp");
+      }
       editorDelChar();
       break;
 
@@ -1004,8 +1042,10 @@ void editorProcessKeypress() {
       {
         if (c == PAGE_UP) {
           E.cy = E.rowoff;
+          editorSetStatusMessage("PgUp");
         } else if (c == PAGE_DOWN) {
           E.cy = E.rowoff + E.screenrows - 1;
+          editorSetStatusMessage("PgDn");
           if (E.cy > E.numrows) E.cy = E.numrows;
         }
 
@@ -1019,6 +1059,16 @@ void editorProcessKeypress() {
     case ARROW_DOWN:
     case ARROW_LEFT:
     case ARROW_RIGHT:
+      if (c == ARROW_UP) {
+        editorSetStatusMessage("Up");
+      } else if (c == ARROW_DOWN) {
+        editorSetStatusMessage("Down");
+      } else if (c == ARROW_LEFT) {
+        editorSetStatusMessage("Left");
+      } else if (c == ARROW_RIGHT) {
+        editorSetStatusMessage("Right");
+      }
+
       editorMoveCursor(c);
       break;
 
@@ -1028,6 +1078,7 @@ void editorProcessKeypress() {
 
     default:
       editorInsertChar(c);
+      editorSetStatusMessage("");
       break;
   }
 
@@ -1044,11 +1095,21 @@ void initEditor() {
   E.coloff = 0;
   E.numrows = 0;
   E.row = NULL;
+  E.line_numbers = 0;
   E.dirty = 0;
   E.filename = NULL;
   E.statusmsg[0] = '\0';
   E.statusmsg_time = 0;
   E.syntax = NULL;
+  struct winsize ws;
+  
+  if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1 || ws.ws_col == 0) {
+      die("ioctl");
+  }
+  E.screenrows = ws.ws_row - 2;
+  E.screencols = ws.ws_col;
+
+  signal(SIGWINCH, editorResizeHandler); // Attach the resize handler
 
   if (getWindowSize(&E.screenrows, &E.screencols) == -1) die("getWindowSize");
   E.screenrows -= 2;
