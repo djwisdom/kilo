@@ -1,3 +1,10 @@
+/*
+ * Copyright (c) 2016 Salvatore Sanfilippo <antirez@gmail.com>
+ * Copyright (c) 2024 Dennis Esternon <djwisdom@serenityos.org>
+ *
+ * SPDX-License-Identifier: BSD-2-Clause
+ */
+
 /*** includes ***/
 
 #define _DEFAULT_SOURCE
@@ -434,7 +441,6 @@ int editorRowRxToCx(erow *row, int rx) {
   }
 }
 
-
 void editorUpdateRow(erow *row) {
   int tabs = 0;
   int j;
@@ -638,7 +644,7 @@ void editorSave() {
         close(fd);
         free(buf);
         E.dirty = 0;
-        editorSetStatusMessage("[INFO] \"%.20s\" %d bytes written to disk", E.filename, len);
+        editorSetStatusMessage("[INFO] \"%.20s\" %dB bytes written", E.filename, len);
         return;
       }
     }
@@ -702,7 +708,6 @@ void editorFindCallback(char *query, int key) {
   }
 }
 
-
 void editorFind() {
   int saved_cx = E.cx;
   int saved_cy = E.cy;
@@ -760,8 +765,8 @@ void editorResizeHandler(int sig) {
         E.cy = E.numrows ? E.numrows - 1 : 0; // Ensure cursor is in bounds
     }
 
-    editorRefreshScreen(); // Redraw the editor after resizing
-    // editorSetStatusMessage("[INFO] Window resized");
+    editorRefreshScreen(); 	// Redraw the editor after resizing
+    editorSetStatusMessage("[INFO] Window resized");
 }
 
 void editorScroll() {
@@ -814,7 +819,8 @@ void editorDrawRows(struct abuf *ab) {
           } else {
 
               int relno = abs(filerow - E.cy) + 1;
-              snprintf(lineno, sizeof(lineno), "%4d ", relno);
+              //snprintf(lineno, sizeof(lineno), "%4d ", relno);
+              snprintf(lineno, sizeof(lineno), "%4d ", E.cy);
           }
 
           abAppend(ab, lineno, strlen(lineno));
@@ -832,12 +838,9 @@ void editorDrawStatusBar(struct abuf *ab) {
   abAppend(ab, "\x1b[7m", 4);
   char status[80], rstatus[80];
   const char *modes[] = {"off", "num", "rel"};
-  int len = snprintf(status, sizeof(status), " \"%.20s\" %d lines  ctrl-h:help  %s",
-    E.filename ? E.filename : " -untitled-", E.numrows,
-    E.dirty ? "-mod-" : "");
-  int rlen = snprintf(rstatus, sizeof(rstatus), "filetype %s %s ln %d, co %d ", 
-    E.syntax ? E.syntax->filetype : "crlf", modes[E.line_numbers], E.cy + 1, E.cx + 1);
-  if (len > E.screencols) len = E.screencols;
+  int len = snprintf(status, sizeof(status), "%.20s  (%d, %d)  %d lines | ft:%s | %s  %s", E.filename ? E.filename : "noname", E.cy + 1, E.cx + 1, E.numrows,
+    E.syntax ? E.syntax->filetype : "unknown", modes[E.line_numbers], E.dirty ? "-mod-" : "");
+  int rlen = snprintf(rstatus, sizeof(rstatus), "Ctrl-g: Key bindings");
   abAppend(ab, status, len);
   while (len < E.screencols) {
     if (E.screencols - len == rlen) {
@@ -894,8 +897,8 @@ void editorSetStatusMessage(const char *fmt, ...) {
 
 void editorToggleLineNumbers() {
     E.line_numbers = (E.line_numbers + 1) % 3;
-    const char *modes[] = {"is disabled", "is enabled", "is in relative mode"};
-    editorSetStatusMessage("Line number %s", modes[E.line_numbers]);
+    const char *modes[] = {"disabled", "enabled", "in relative mode"};
+    editorSetStatusMessage("Line number is %s", modes[E.line_numbers]);
 }
 
 /*** input ***/
@@ -1020,11 +1023,11 @@ void editorProcessKeypress() {
       break;
 
     case CTRL_KEY('g'):
-      editorSetStatusMessage("[TODO] Goto line");
+      editorSetStatusMessage("[MENU] ^q:quit ^s:save ^f:find ^n:+/-linenumber");
       break;
 
     case CTRL_KEY('h'):
-      editorSetStatusMessage("[MENU] ^q:quit ^s:save ^f:find ^n:+/-linenumber");
+      editorSetStatusMessage("[TODO]");
       break;
 
     case HOME_KEY:
